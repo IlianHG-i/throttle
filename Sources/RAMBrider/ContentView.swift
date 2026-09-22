@@ -32,8 +32,19 @@ private struct SystemGaugesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("RAM Brider")
-                .font(.headline)
+            HStack {
+                Text("RAM Brider")
+                    .font(.headline)
+                Spacer()
+                if monitor.suspendedCount > 0 {
+                    Button {
+                        monitor.resumeAll()
+                    } label: {
+                        Label("Reprendre tout (\(monitor.suspendedCount))", systemImage: "arrow.clockwise")
+                    }
+                    .help("Reprend toutes les applications actuellement en pause")
+                }
+            }
 
             gauge(
                 title: "Memoire",

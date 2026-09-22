@@ -180,4 +180,20 @@ final class SystemMonitor: ObservableObject {
         let signal = app.isSuspended ? SIGCONT : SIGSTOP
         return kill(app.id, signal) == 0
     }
+
+    /// Emergency escape hatch: resume every app this list currently sees as
+    /// suspended. Multi-process apps (Electron apps like Discord/Slack/VS
+    /// Code) only have their main process paused, which can make the whole
+    /// app look hung and block relaunch through the Dock (single-instance
+    /// lock can't respond while frozen) — this is the reliable way back.
+    func resumeAll() {
+        for app in apps where app.isSuspended {
+            kill(app.id, SIGCONT)
+        }
+        refresh()
+    }
+
+    var suspendedCount: Int {
+        apps.count { $0.isSuspended }
+    }
 }
