@@ -95,7 +95,10 @@ final class SystemMonitor: ObservableObject {
 
     private func refreshApps() {
         let now = Date()
-        let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let selfPid = ProcessInfo.processInfo.processIdentifier
+        let running = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != selfPid
+        }
 
         var updated: [AppInfo] = []
         updated.reserveCapacity(running.count)
@@ -170,6 +173,7 @@ final class SystemMonitor: ObservableObject {
 
     @discardableResult
     func toggleSuspend(_ app: AppInfo) -> Bool {
+        guard app.id != ProcessInfo.processInfo.processIdentifier else { return false }
         if ProtectedApps.isProtected(app.runningApplication) {
             return false
         }

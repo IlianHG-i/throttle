@@ -34,14 +34,15 @@ struct AppRowView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(Formatting.bytes(app.memoryBytes))
                     .font(.callout.monospacedDigit())
-                Text(Formatting.percent(app.cpuPercent) + " CPU")
+                Text(Formatting.appCPUPercent(app.cpuPercent) + " CPU")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 100, alignment: .trailing)
+            .frame(width: 110, alignment: .trailing)
 
             Button {
                 monitor.toggleSuspend(app)
+                monitor.refresh()
             } label: {
                 Image(systemName: app.isSuspended ? "play.fill" : "pause.fill")
                     .frame(width: 20)
