@@ -18,12 +18,18 @@ final class SystemMonitor: ObservableObject {
     private var previousAppCPU: [pid_t: (cpuNanoseconds: UInt64, timestamp: Date)] = [:]
     private var timer: Timer?
 
+    /// Source of truth for pause/resume: apps *we* have suspended. Driven
+    /// directly by our own toggle instead of re-derived from `sysctl` each
+    /// refresh, so the button state is deterministic and never races the
+    /// kernel actually finishing the stop.
+    private var suspendedPids: Set<pid_t> = []
+
     var usedMemoryFraction: Double {
         guard totalMemoryBytes > 0 else { return 0 }
         return Double(usedMemoryBytes) / Double(totalMemoryBytes)
     }
 
-    func start(interval: TimeInterval = 2.0) {
+    func start(interval: TimeInterval = 1.0) {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -141,26 +147,18 @@ final class SystemMonitor: ObservableObject {
                     icon: app.icon,
                     memoryBytes: memoryBytes,
                     cpuPercent: max(0, cpuPercent),
-                    isSuspended: app.isTerminated ? false : appIsSuspended(pid: pid),
+                    isSuspended: suspendedPids.contains(pid),
                     runningApplication: app
                 )
             )
         }
 
-        let deadPids = Set(previousAppCPU.keys).subtracting(updated.map { $0.id })
+        let currentPids = Set(updated.map { $0.id })
+        let deadPids = Set(previousAppCPU.keys).subtracting(currentPids)
         for pid in deadPids { previousAppCPU.removeValue(forKey: pid) }
+        suspendedPids.formIntersection(currentPids)
 
         apps = updated.sorted { $0.memoryBytes > $1.memoryBytes }
-    }
-
-    private func appIsSuspended(pid: pid_t) -> Bool {
-        var info = kinfo_proc()
-        var size = MemoryLayout<kinfo_proc>.stride
-        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-        let result = sysctl(&mib, u_int(mib.count), &info, &size, nil, 0)
-        guard result == 0 else { return false }
-        // SSTOP == 4 in <sys/proc.h>
-        return info.kp_proc.p_stat == 4
     }
 
     // MARK: - Pause / resume
@@ -177,23 +175,31 @@ final class SystemMonitor: ObservableObject {
         if ProtectedApps.isProtected(app.runningApplication) {
             return false
         }
-        let signal = app.isSuspended ? SIGCONT : SIGSTOP
-        return kill(app.id, signal) == 0
+        let alreadySuspended = suspendedPids.contains(app.id)
+        let signal = alreadySuspended ? SIGCONT : SIGSTOP
+        guard kill(app.id, signal) == 0 else { return false }
+        if alreadySuspended {
+            suspendedPids.remove(app.id)
+        } else {
+            suspendedPids.insert(app.id)
+        }
+        return true
     }
 
-    /// Emergency escape hatch: resume every app this list currently sees as
-    /// suspended. Multi-process apps (Electron apps like Discord/Slack/VS
-    /// Code) only have their main process paused, which can make the whole
-    /// app look hung and block relaunch through the Dock (single-instance
-    /// lock can't respond while frozen) — this is the reliable way back.
+    /// Emergency escape hatch: resume every app we've suspended. Multi-process
+    /// apps (Electron apps like Discord/Slack/VS Code) only have their main
+    /// process paused, which can make the whole app look hung and block
+    /// relaunch through the Dock (single-instance lock can't respond while
+    /// frozen) — this is the reliable way back.
     func resumeAll() {
-        for app in apps where app.isSuspended {
-            kill(app.id, SIGCONT)
+        for pid in suspendedPids {
+            kill(pid, SIGCONT)
         }
+        suspendedPids.removeAll()
         refresh()
     }
 
     var suspendedCount: Int {
-        apps.count { $0.isSuspended }
+        suspendedPids.count
     }
 }

@@ -1,6 +1,6 @@
 import AppKit
 
-struct AppInfo: Identifiable, Equatable {
+struct AppInfo: Identifiable {
     let id: pid_t
     let bundleIdentifier: String?
     let name: String
@@ -9,10 +9,6 @@ struct AppInfo: Identifiable, Equatable {
     var cpuPercent: Double
     var isSuspended: Bool
     let runningApplication: NSRunningApplication
-
-    static func == (lhs: AppInfo, rhs: AppInfo) -> Bool {
-        lhs.id == rhs.id
-    }
 }
 
 enum ProtectedApps {
