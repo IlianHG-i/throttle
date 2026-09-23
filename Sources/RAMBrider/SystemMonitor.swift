@@ -16,6 +16,7 @@ final class SystemMonitor: ObservableObject {
 
     private var previousCPUTicks: host_cpu_load_info?
     private var previousAppCPU: [pid_t: (cpuNanoseconds: UInt64, timestamp: Date)] = [:]
+    private var lastRefreshDate: Date?
     private var timer: Timer?
 
     /// Source of truth for pause/resume: apps *we* have suspended. Driven
@@ -97,6 +98,48 @@ final class SystemMonitor: ObservableObject {
         usedMemoryBytes = used
     }
 
+    // MARK: - Process tree
+    //
+    // Electron/Chromium-based apps (Discord, Chrome, Slack, VS Code...) split
+    // themselves into a main process plus several helpers (renderer, GPU,
+    // network, audio...). Reading only the main pid was undercounting CPU/RAM
+    // by a lot and, worse, "pausing" left the helpers running. We walk the
+    // whole descendant tree per app instead.
+
+    private func directChildPids(of pid: pid_t) -> [pid_t] {
+        let neededBytes = proc_listchildpids(pid, nil, 0)
+        guard neededBytes > 0 else { return [] }
+        let capacity = Int(neededBytes) / MemoryLayout<pid_t>.size
+        var buffer = [pid_t](repeating: 0, count: capacity)
+        let filledBytes = buffer.withUnsafeMutableBytes { raw in
+            proc_listchildpids(pid, raw.baseAddress, Int32(raw.count))
+        }
+        guard filledBytes > 0 else { return [] }
+        let count = min(capacity, Int(filledBytes) / MemoryLayout<pid_t>.size)
+        return Array(buffer[0..<count])
+    }
+
+    /// Root pid plus every descendant, breadth-first. Capped defensively —
+    /// real app trees are a handful of processes.
+    private func processTree(rootPid: pid_t) -> [pid_t] {
+        var tree = [rootPid]
+        var frontier = [rootPid]
+        var visited: Set<pid_t> = [rootPid]
+
+        while !frontier.isEmpty, tree.count < 256 {
+            var next: [pid_t] = []
+            for pid in frontier {
+                for child in directChildPids(of: pid) where !visited.contains(child) {
+                    visited.insert(child)
+                    next.append(child)
+                }
+            }
+            tree.append(contentsOf: next)
+            frontier = next
+        }
+        return tree
+    }
+
     // MARK: - Per-app resource usage
 
     private func refreshApps() {
@@ -108,34 +151,42 @@ final class SystemMonitor: ObservableObject {
 
         var updated: [AppInfo] = []
         updated.reserveCapacity(running.count)
+        var touchedPids: Set<pid_t> = []
 
         for app in running {
             let pid = app.processIdentifier
             guard pid > 0 else { continue }
 
-            var rusage = rusage_info_v4()
-            let rc = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
-                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPtr in
-                    proc_pid_rusage(pid, RUSAGE_INFO_V4, reboundPtr)
-                }
-            }
+            var totalMemory: UInt64 = 0
+            var totalCPUDeltaNs: Double = 0
 
-            var memoryBytes: UInt64 = 0
-            var cpuPercent: Double = 0
+            for memberPid in processTree(rootPid: pid) {
+                touchedPids.insert(memberPid)
 
-            if rc == 0 {
-                memoryBytes = rusage.ri_phys_footprint
-                let cpuNs = rusage.ri_user_time + rusage.ri_system_time
-
-                if let previous = previousAppCPU[pid] {
-                    let elapsed = now.timeIntervalSince(previous.timestamp)
-                    if elapsed > 0, cpuNs >= previous.cpuNanoseconds {
-                        let deltaNs = Double(cpuNs - previous.cpuNanoseconds)
-                        cpuPercent = (deltaNs / (elapsed * 1_000_000_000)) * 100
+                var rusage = rusage_info_v4()
+                let rc = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
+                    ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPtr in
+                        proc_pid_rusage(memberPid, RUSAGE_INFO_V4, reboundPtr)
                     }
                 }
-                previousAppCPU[pid] = (cpuNs, now)
+                guard rc == 0 else { continue }
+
+                totalMemory += rusage.ri_phys_footprint
+                let cpuNs = rusage.ri_user_time + rusage.ri_system_time
+
+                if let previous = previousAppCPU[memberPid] {
+                    let elapsed = now.timeIntervalSince(previous.timestamp)
+                    if elapsed > 0, cpuNs >= previous.cpuNanoseconds {
+                        totalCPUDeltaNs += Double(cpuNs - previous.cpuNanoseconds)
+                    }
+                }
+                previousAppCPU[memberPid] = (cpuNs, now)
             }
+
+            let elapsedSinceLastRefresh = now.timeIntervalSince(lastRefreshDate ?? now)
+            let cpuPercent = elapsedSinceLastRefresh > 0
+                ? (totalCPUDeltaNs / (elapsedSinceLastRefresh * 1_000_000_000)) * 100
+                : 0
 
             let name = app.localizedName ?? app.bundleURL?.deletingPathExtension().lastPathComponent ?? "Unknown"
 
@@ -145,18 +196,18 @@ final class SystemMonitor: ObservableObject {
                     bundleIdentifier: app.bundleIdentifier,
                     name: name,
                     icon: app.icon,
-                    memoryBytes: memoryBytes,
+                    memoryBytes: totalMemory,
                     cpuPercent: max(0, cpuPercent),
                     isSuspended: suspendedPids.contains(pid),
                     runningApplication: app
                 )
             )
         }
+        lastRefreshDate = now
 
-        let currentPids = Set(updated.map { $0.id })
-        let deadPids = Set(previousAppCPU.keys).subtracting(currentPids)
+        let deadPids = Set(previousAppCPU.keys).subtracting(touchedPids)
         for pid in deadPids { previousAppCPU.removeValue(forKey: pid) }
-        suspendedPids.formIntersection(currentPids)
+        suspendedPids.formIntersection(Set(updated.map { $0.id }))
 
         apps = updated.sorted { $0.memoryBytes > $1.memoryBytes }
     }
@@ -169,6 +220,9 @@ final class SystemMonitor: ObservableObject {
     // background app is put to sleep under memory pressure), SIGCONT wakes it
     // back up. Both only work on processes owned by the current user.
 
+    /// Pauses/resumes the app's whole process tree, not just the main pid —
+    /// otherwise helper processes (Electron renderer/GPU/network...) keep
+    /// running and the memory never actually gets freed.
     @discardableResult
     func toggleSuspend(_ app: AppInfo) -> Bool {
         guard app.id != ProcessInfo.processInfo.processIdentifier else { return false }
@@ -177,7 +231,11 @@ final class SystemMonitor: ObservableObject {
         }
         let alreadySuspended = suspendedPids.contains(app.id)
         let signal = alreadySuspended ? SIGCONT : SIGSTOP
-        guard kill(app.id, signal) == 0 else { return false }
+        var succeededAny = false
+        for pid in processTree(rootPid: app.id) where kill(pid, signal) == 0 {
+            succeededAny = true
+        }
+        guard succeededAny else { return false }
         if alreadySuspended {
             suspendedPids.remove(app.id)
         } else {
@@ -186,9 +244,9 @@ final class SystemMonitor: ObservableObject {
         return true
     }
 
-    /// Quits an app. If it's currently paused it's resumed first — a frozen
-    /// process can't process a quit request, so terminate() would silently
-    /// do nothing on a suspended app.
+    /// Quits an app. If it's currently paused, its whole tree is resumed
+    /// first — a frozen process can't process a quit request, so terminate()
+    /// would silently do nothing on a suspended app.
     @discardableResult
     func terminate(_ app: AppInfo) -> Bool {
         guard app.id != ProcessInfo.processInfo.processIdentifier else { return false }
@@ -196,19 +254,19 @@ final class SystemMonitor: ObservableObject {
             return false
         }
         if suspendedPids.remove(app.id) != nil {
-            kill(app.id, SIGCONT)
+            for pid in processTree(rootPid: app.id) { kill(pid, SIGCONT) }
         }
         return app.runningApplication.terminate()
     }
 
-    /// Emergency escape hatch: resume every app we've suspended. Multi-process
-    /// apps (Electron apps like Discord/Slack/VS Code) only have their main
-    /// process paused, which can make the whole app look hung and block
-    /// relaunch through the Dock (single-instance lock can't respond while
-    /// frozen) — this is the reliable way back.
+    /// Emergency escape hatch: resume every app we've suspended (whole tree
+    /// each). Multi-process apps (Electron apps like Discord/Slack/VS Code)
+    /// can make the whole app look hung and block relaunch through the Dock
+    /// (single-instance lock can't respond while frozen) — this is the
+    /// reliable way back.
     func resumeAll() {
-        for pid in suspendedPids {
-            kill(pid, SIGCONT)
+        for rootPid in suspendedPids {
+            for pid in processTree(rootPid: rootPid) { kill(pid, SIGCONT) }
         }
         suspendedPids.removeAll()
         refresh()

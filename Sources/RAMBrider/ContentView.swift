@@ -57,6 +57,9 @@ private struct SystemGaugesView: View {
                 fraction: monitor.systemCPUPercent / 100,
                 detail: Formatting.percent(monitor.systemCPUPercent)
             )
+            Text("Inclut les processus systeme (WindowServer, kernel_task...) non listes ci-dessous")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 
