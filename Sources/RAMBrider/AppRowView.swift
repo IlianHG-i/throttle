@@ -31,6 +31,17 @@ struct AppRowView: View {
 
             Spacer()
 
+            Button {
+                monitor.terminate(app)
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .frame(width: 20)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.red)
+            .disabled(isProtected)
+            .help(isProtected ? "Application protegee" : "Quitter l'application")
+
             VStack(alignment: .trailing, spacing: 2) {
                 Text(Formatting.bytes(app.memoryBytes))
                     .font(.callout.monospacedDigit())

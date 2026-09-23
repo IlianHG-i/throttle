@@ -186,6 +186,21 @@ final class SystemMonitor: ObservableObject {
         return true
     }
 
+    /// Quits an app. If it's currently paused it's resumed first — a frozen
+    /// process can't process a quit request, so terminate() would silently
+    /// do nothing on a suspended app.
+    @discardableResult
+    func terminate(_ app: AppInfo) -> Bool {
+        guard app.id != ProcessInfo.processInfo.processIdentifier else { return false }
+        if ProtectedApps.isProtected(app.runningApplication) {
+            return false
+        }
+        if suspendedPids.remove(app.id) != nil {
+            kill(app.id, SIGCONT)
+        }
+        return app.runningApplication.terminate()
+    }
+
     /// Emergency escape hatch: resume every app we've suspended. Multi-process
     /// apps (Electron apps like Discord/Slack/VS Code) only have their main
     /// process paused, which can make the whole app look hung and block
