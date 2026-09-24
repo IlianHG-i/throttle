@@ -9,6 +9,8 @@ import CLibProc
 @MainActor
 final class SystemMonitor: ObservableObject {
 
+    static let shared = SystemMonitor()
+
     @Published private(set) var systemCPUPercent: Double = 0
     @Published private(set) var usedMemoryBytes: UInt64 = 0
     @Published private(set) var totalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory

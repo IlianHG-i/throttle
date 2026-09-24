@@ -23,7 +23,7 @@ struct ContentView: View {
                 .listStyle(.inset)
             }
         }
-        .frame(minWidth: 520, minHeight: 640)
+        .frame(width: 480, height: 600)
     }
 }
 
@@ -44,6 +44,12 @@ private struct SystemGaugesView: View {
                     }
                     .help("Reprend toutes les applications actuellement en pause")
                 }
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Image(systemName: "power")
+                }
+                .help("Quitter RAM Brider")
             }
 
             gauge(
