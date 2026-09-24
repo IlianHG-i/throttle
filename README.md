@@ -6,6 +6,7 @@ App macOS native (SwiftUI) qui affiche la consommation RAM/CPU du Mac **par appl
 
 ## Fonctionnalités
 
+- Icône dans la barre de menus avec le pourcentage de RAM utilisée ; un clic ouvre le panneau (pas d'icône dans le Dock). Le bouton power du panneau quitte l'app.
 - Jauges RAM et CPU système en direct (rafraîchies chaque seconde).
 - Liste façon gestionnaire des tâches Windows : une ligne par **application** (pas par processus), triée de la plus gourmande à la moins gourmande.
 - CPU et RAM agrégés sur tout l'arbre de processus de l'appli (les applis Electron/Chromium comme Discord ou Firefox comptent leurs processus auxiliaires).
