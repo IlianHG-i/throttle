@@ -1,34 +1,70 @@
-# RAM Brider
+# Throttle
 
-App macOS native (SwiftUI) pour surveiller la RAM/CPU du systeme et mettre en pause des applications pour liberer de la memoire, sans jamais ouvrir Xcode.
+App macOS native (SwiftUI) qui affiche la consommation RAM/CPU du Mac **par application** et permet de mettre en pause les applis gourmandes sans les fermer. Pensée pour les petites configs (8 Go).
 
-## Fonctionnement
+> L'app est pour l'instant buildée sous le nom `RAMBrider.app` (nom de code du POC).
 
-- Liste les applications avec interface (Dock) via `NSWorkspace.runningApplications`, pas les processus systeme.
-- Memoire/CPU par application lues via `proc_pid_rusage` (libproc), RAM/CPU systeme via les API Mach (`host_statistics`/`host_statistics64`).
-- Mettre en pause une application envoie `SIGSTOP` (comme le fait le systeme quand il compresse la memoire des apps en arriere-plan) ; reprendre envoie `SIGCONT`.
-- Quelques applications critiques (Finder, Dock, SystemUIServer, RAM Brider elle-meme) sont protegees et ne peuvent pas etre mises en pause.
+## Fonctionnalités
 
-## Build & run
+- Jauges RAM et CPU système en direct (rafraîchies chaque seconde).
+- Liste façon gestionnaire des tâches Windows : une ligne par **application** (pas par processus), triée de la plus gourmande à la moins gourmande.
+- CPU et RAM agrégés sur tout l'arbre de processus de l'appli (les applis Electron/Chromium comme Discord ou Firefox comptent leurs processus auxiliaires).
+- **Pause / reprise** par appli, et bouton **Reprendre tout** en secours.
+- **Quitter** une appli en un clic (fermeture normale, l'appli est d'abord reprise si elle était en pause).
+- Applis critiques protégées (Finder, Dock, SystemUIServer...).
+- Lancement automatique à la connexion (LaunchAgent).
 
-Tout se fait en ligne de commande, aucun besoin d'Xcode :
+## Ce que fait vraiment la pause
+
+La pause envoie `SIGSTOP` à tout l'arbre de processus de l'appli, la reprise envoie `SIGCONT`.
+
+- Le **CPU tombe à 0 % immédiatement**.
+- La **RAM ne baisse pas immédiatement**. macOS ne compresse la mémoire d'un processus que sous pression mémoire, selon son propre calendrier. La pause rend la mémoire candidate à la récupération et l'empêche de grossir, mais ne la libère pas d'un coup. Aucune API publique ne permet de forcer ça sur un autre processus (testé : forcer 3 Go de pression mémoire n'a rien changé).
+- Pour récupérer la RAM tout de suite, il faut **quitter** l'appli.
+
+Une appli en pause apparaît figée : c'est normal. Reprends-la depuis Throttle plutôt que de la relancer depuis le Dock.
+
+## Installation
+
+Aucun besoin d'ouvrir Xcode, tout se fait en ligne de commande (Swift 5.10+, macOS 13+) :
+
+```bash
+git clone https://github.com/IlianHG-i/throttle.git
+cd throttle
+./Scripts/install.sh
+```
+
+`install.sh` compile, signe, copie l'app dans `/Applications` et l'enregistre comme item de démarrage. La signature utilise l'identité « Apple Development » de la machine si elle existe, sinon une signature ad-hoc.
+
+Pour builder sans installer :
 
 ```bash
 ./Scripts/build_app.sh
 open dist/RAMBrider.app
 ```
 
-Le script compile en release, assemble `dist/RAMBrider.app` et le signe : avec l'identite "Apple Development" installee sur la machine si elle existe, sinon en signature ad-hoc.
-
-## Developpement
+Pour désactiver le démarrage automatique :
 
 ```bash
-swift build          # compilation debug rapide
-swift run RAMBrider   # lance directement sans passer par le bundle .app
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ilianhg.RAMBrider.plist
+rm ~/Library/LaunchAgents/com.ilianhg.RAMBrider.plist
+```
+
+## Développement
+
+```bash
+swift build           # compilation debug
+swift run RAMBrider   # lance sans passer par le bundle .app
 ```
 
 ## Structure
 
-- `Sources/RAMBrider/` : app SwiftUI (vue, modele, monitoring systeme)
-- `Sources/CLibProc/` : shim de module systeme exposant `libproc.h` (pour `proc_pid_rusage`) a Swift
-- `Scripts/build_app.sh` : build + bundling `.app` + signature
+- `Sources/RAMBrider/` : app SwiftUI (vues, modèle, monitoring système)
+- `Sources/CLibProc/` : module système exposant `libproc.h` à Swift (`proc_pid_rusage`, `proc_listchildpids`)
+- `Scripts/build_app.sh` : build, bundle `.app`, signature
+- `Scripts/install.sh` : build + installation + démarrage auto
+
+## Limites
+
+- Seules les applis avec une icône Dock sont listées. Le CPU total de la jauge inclut aussi les processus système (WindowServer, kernel_task...) non listés.
+- Pas de sandbox : l'app envoie des signaux à d'autres processus, ce qui ne marche que sur ceux de l'utilisateur courant.
