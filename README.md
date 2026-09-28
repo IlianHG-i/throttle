@@ -11,7 +11,7 @@ App macOS native (SwiftUI) qui affiche la consommation RAM/CPU du Mac **par appl
 - Liste façon gestionnaire des tâches Windows : une ligne par **application** (pas par processus), triée de la plus gourmande à la moins gourmande.
 - CPU et RAM agrégés sur tout l'arbre de processus de l'appli (les applis Electron/Chromium comme Discord ou Firefox comptent leurs processus auxiliaires).
 - **Pause / reprise** par appli, et bouton **Reprendre tout** en secours.
-- **Quitter** une appli en un clic (fermeture normale, l'appli est d'abord reprise si elle était en pause).
+- **Quitter** une appli en un clic (l'appli est d'abord reprise si elle était en pause). Fermeture normale en priorité, puis forcée automatiquement si l'appli traîne des pieds ou ignore la demande (certains agents comme Microsoft AutoUpdate le font).
 - Applis critiques protégées (Finder, Dock, SystemUIServer...).
 - Lancement automatique à la connexion (LaunchAgent).
 
