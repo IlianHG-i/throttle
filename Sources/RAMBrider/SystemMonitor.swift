@@ -249,6 +249,15 @@ final class SystemMonitor: ObservableObject {
     /// Quits an app. If it's currently paused, its whole tree is resumed
     /// first — a frozen process can't process a quit request, so terminate()
     /// would silently do nothing on a suspended app.
+    ///
+    /// Some background/updater apps (e.g. Microsoft AutoUpdate) accept the
+    /// quit request but sit on it for several seconds before actually
+    /// exiting, or never act on it at all — confirmed by testing. So this
+    /// escalates in three steps, each one only firing if the process is
+    /// still alive: terminate() (graceful) -> forceTerminate() (harder,
+    /// still Apple-Event based, can also be slow/ignored) -> SIGKILL on the
+    /// whole process tree (kernel-level, cannot be ignored or delayed —
+    /// guarantees the button always actually closes the app).
     @discardableResult
     func terminate(_ app: AppInfo) -> Bool {
         guard app.id != ProcessInfo.processInfo.processIdentifier else { return false }
@@ -258,7 +267,26 @@ final class SystemMonitor: ObservableObject {
         if suspendedPids.remove(app.id) != nil {
             for pid in processTree(rootPid: app.id) { kill(pid, SIGCONT) }
         }
-        return app.runningApplication.terminate()
+        let runningApp = app.runningApplication
+        let rootPid = app.id
+        let askedNicely = runningApp.terminate()
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard Self.processExists(rootPid) else { return }
+            runningApp.forceTerminate()
+
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard Self.processExists(rootPid) else { return }
+            for pid in self?.processTree(rootPid: rootPid) ?? [rootPid] {
+                kill(pid, SIGKILL)
+            }
+        }
+        return askedNicely
+    }
+
+    private static func processExists(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0
     }
 
     /// Emergency escape hatch: resume every app we've suspended (whole tree
